@@ -76,6 +76,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << 'EOF'
             set -e
+            mkdir -p /home/$USER/oneit-blog
             cd /home/$USER/oneit-blog || git clone https://github.com/regperez/oneit-blog.git
             cd oneit-blog
 
