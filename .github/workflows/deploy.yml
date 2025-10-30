@@ -78,7 +78,6 @@ jobs:
             set -e
             mkdir -p /home/$USER/oneit-blog
             cd /home/$USER/oneit-blog || git clone https://github.com/regperez/oneit-blog.git
-            cd oneit-blog
 
             # Actualizar docker-compose.yml con la nueva imagen
             sed -i "s|image: .*|image: ${REGISTRY}/${IMAGE_NAME}:latest|" docker-compose.yml
