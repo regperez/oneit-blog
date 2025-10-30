@@ -1,8 +1,8 @@
-#version: '3.9'
+# version: '3.9'
 
 services:
   web:
-    image: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog:latest
+    image: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog
     container_name: flask_blog
     ports:
       - "80:5000"
