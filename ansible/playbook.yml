@@ -1,0 +1,82 @@
+---
+- name: Configurar VM del Blog Flask
+  hosts: blogserver
+  become: true
+  vars:
+    app_dir: /home/gcpuser/oneit-blog
+    registry: "us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo"
+    image_name: "flask-blog"
+    db_user: "user"
+    db_password: "password"
+    db_name: "blogdb"
+
+  tasks:
+    - name: Actualizar sistema
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    - name: Instalar dependencias básicas
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - git
+        state: present
+
+    - name: Agregar clave GPG de Docker
+      shell: |
+        curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/docker-archive-keyring.gpg
+
+    - name: Agregar repositorio oficial de Docker
+      shell: |
+        echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+        https://download.docker.com/linux/debian \
+        $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Instalar Docker y Docker Compose
+      apt:
+        update_cache: yes
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Agregar usuario gcpuser al grupo docker
+      user:
+        name: gcpuser
+        groups: docker
+        append: yes
+
+    - name: Clonar el repositorio del blog
+      become_user: gcpuser
+      git:
+        repo: "https://github.com/regperez/oneit-blog.git"
+        dest: "{{ app_dir }}"
+        version: main
+        update: yes
+
+    - name: Crear docker-compose.yml desde plantilla
+      template:
+        src: templates/docker-compose.yml.j2
+        dest: "{{ app_dir }}/docker-compose.yml"
+        owner: gcpuser
+        group: gcpuser
+        mode: '0644'
+
+    - name: Iniciar los contenedores con Docker Compose
+      become_user: gcpuser
+      shell: |
+        cd {{ app_dir }}
+        docker compose up -d
+

@@ -2,23 +2,24 @@ version: '3.9'
 
 services:
   web:
-    image: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog:latest
+    image: {{ registry }}/{{ image_name }}:latest
     container_name: flask_blog
     ports:
       - "80:5000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/blogdb
+      - DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@db:5432/{{ db_name }}
     depends_on:
       - db
+    restart: always
 
   db:
     image: postgres:15
     container_name: blog_db
     restart: always
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: blogdb
+      POSTGRES_USER: {{ db_user }}
+      POSTGRES_PASSWORD: {{ db_password }}
+      POSTGRES_DB: {{ db_name }}
     volumes:
       - blog_data:/var/lib/postgresql/data
 

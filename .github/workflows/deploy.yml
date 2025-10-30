@@ -1,0 +1,89 @@
+name: CI/CD to GCP VM via Artifact Registry
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build, Push & Deploy Flask Blog
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    env:
+      PROJECT_ID: blog-flask-oneit
+      REGION: us-east1
+      REPO_NAME: blog-repo
+      IMAGE_NAME: flask-blog
+      IMAGE_TAG: ${{ github.sha }}
+      REGISTRY: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo
+
+    steps:
+      # 1️⃣ Checkout del código fuente
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Autenticación con GCP vía OIDC
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      # 3️⃣ Configurar gcloud y Docker
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          install_components: gcloud, docker-credential-gcr
+
+      - name: Configure Docker to use Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # 4️⃣ Construir imagen Docker
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # 5️⃣ Subir imagen a Artifact Registry
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # 6️⃣ Preparar conexión SSH a la VM
+      - name: Add SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+
+      # 7️⃣ Desplegar en la VM
+      - name: Deploy to GCP VM
+        env:
+          VM_USER: gcpuser
+          VM_IP: ${{ secrets.VM_IP }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << 'EOF'
+            set -e
+            cd /home/$USER/oneit-blog || git clone https://github.com/regperez/oneit-blog.git
+            cd oneit-blog
+
+            # Actualizar docker-compose.yml con la nueva imagen
+            sed -i "s|image: .*|image: ${REGISTRY}/${IMAGE_NAME}:latest|" docker-compose.yml
+
+            echo "Pulling latest image and restarting containers..."
+            docker compose pull
+            docker compose up -d
+          EOF
+
