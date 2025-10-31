@@ -1,13 +1,18 @@
-# version: '3.9'
+# 'version' está obsoleto y se puede omitir de forma segura.
 
 services:
   web:
-    image: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog
+    # --- ¡ESTA ES LA CORRECCIÓN CLAVE! ---
+    # Usamos una variable de entorno ${IMAGE_TAG} para la etiqueta.
+    # Si la variable no existe, usará 'latest' como valor predeterminado.
+    image: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog:${IMAGE_TAG:-latest}
     container_name: flask_blog
     ports:
       - "80:5000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/blogdb
+      # --- MEJORA DE SEGURIDAD ---
+      # No guardes contraseñas aquí. Léelas desde variables de entorno.
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     depends_on:
       - db
 
@@ -16,12 +21,13 @@ services:
     container_name: blog_db
     restart: always
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: blogdb
+      # --- MEJORA DE SEGURIDAD ---
+      # Lee estas variables del entorno (ej. un archivo .env)
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - blog_data:/var/lib/postgresql/data
 
 volumes:
   blog_data:
-
