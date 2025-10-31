@@ -71,16 +71,36 @@ jobs:
         env:
           VM_USER: gcpuser
           VM_IP: ${{ secrets.VM_IP }}
-          # Las variables del 'env' global del job ya están disponibles aquí
-          # (PROJECT_ID, REGION, IMAGE_TAG, REGISTRY, IMAGE_NAME)
+          # Nuevas variables para la autenticación remota:
+          SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+          SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }} # << DEBES CREAR ESTE SECRETO
+          
+          # Variables de imagen
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          
         run: |
           ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << EOF
             # Habilita 'exit on error'
             set -e
 
-            # Autentica la VM con Artifact Registry
-            echo "Authenticating VM Docker to Artifact Registry..."
+            # 🚩 CORRECCIÓN CRÍTICA 1: AUTENTICACIÓN DE GCLOUD PARA PULL
+            echo "Activating service account for Docker pull..."
+            
+            # 1. Crea temporalmente el archivo de clave JSON en la VM
+            echo "${SA_KEY_JSON}" > /tmp/key.json
+            
+            # 2. Activa la cuenta de servicio usando la clave
+            gcloud auth activate-service-account ${SA_EMAIL} --key-file=/tmp/key.json
+            
+            # 3. Configura Docker (ahora tiene una cuenta activa para usar)
             gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+            # 4. Limpia el archivo de clave por seguridad
+            rm /tmp/key.json
+
+            # ... (Lógica de Git sin cambios) ...
 
             export REPO_DIR="/home/${VM_USER}/oneit-blog"
             export REPO_URL="https://github.com/regperez/oneit-blog.git"
@@ -90,8 +110,7 @@ jobs:
               echo "Repo exists. Pulling latest changes..."
               cd \$REPO_DIR
 
-              # 🚩 CORRECCIÓN CRÍTICA: Descartar cambios locales antes de pull
-              # Esto elimina la versión anterior modificada por 'sed'
+              # Descartar cambios locales antes de pull
               git reset --hard
               git clean -f -d
               
@@ -103,16 +122,14 @@ jobs:
               cd \$REPO_DIR
             fi
 
-            # Ahora se ejecuta el sed, modificando la versión limpia del archivo.
             # Actualiza 'docker-compose.yml' con la ETIQUETA DEL COMMIT (SHA)
             echo "Setting image tag to: ${{ env.IMAGE_TAG }}"
             
-            # Esta expresión 'sed' buscará la línea que empieza con 'image: ...' 
-            # y reemplazará *toda* la línea con la nueva URL de imagen + etiqueta SHA.
             sed -i "s|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}|" docker-compose.yml
 
             # 5. Desplegar
             echo "Pulling latest image and restarting containers..."
+            # Ahora Docker Compose debería tener las credenciales correctas
             docker compose pull
             docker compose up -d --remove-orphans
           EOF
