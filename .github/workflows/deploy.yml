@@ -67,10 +67,17 @@ jobs:
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
           
       # Codificar la clave JSON a Base64 para una transferencia segura
-      - name: Encode SA Key to Base64
+      - name: Encode and Clean SA Key to Base64
         id: encode_key
-        run: echo "ENCODED_KEY=$(echo '${{ secrets.GCP_SA_KEY_JSON }}' | base64 -w 0)" >> $GITHUB_ENV
-        # La variable ENCODED_KEY estará disponible para el siguiente paso
+        run: |
+          # CORRECCIÓN: Limpia el secreto de saltos de línea ('\n') y retornos de carro ('\r')
+          CLEAN_JSON=$(echo '${{ secrets.GCP_SA_KEY_JSON }}' | tr -d '\n\r')
+          
+          # Codifica el JSON limpio en una sola línea.
+          ENCODED_KEY=$(echo "${CLEAN_JSON}" | base64 -w 0)
+          
+          # Exporta la variable para el paso SSH
+          echo "ENCODED_KEY=${ENCODED_KEY}" >> $GITHUB_ENV
 
       # 7️⃣ Desplegar en la VM
       - name: Deploy to GCP VM
@@ -92,7 +99,7 @@ jobs:
 
             echo "Activating service account for Docker pull..."
             
-            # 🚩 CORRECCIÓN CRÍTICA 1: Decodificar el secreto de forma segura
+            # Decodificar el secreto de forma segura
             # 1. Escribe la clave codificada (una sola línea) en un archivo temporal
             echo "${ENCODED_SA_KEY}" > /tmp/key_base64.txt
             
