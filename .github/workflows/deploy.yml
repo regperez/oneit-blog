@@ -81,74 +81,52 @@ jobs:
 
       # 7️⃣ Desplegar en la VM
       - name: Deploy to GCP VM
-        env:
-          VM_USER: gcpuser
-          VM_IP: ${{ secrets.VM_IP }}
-          SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
-          # Usamos la clave codificada que acabamos de crear:
-          ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
-          
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
-          REGISTRY: ${{ env.REGISTRY }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          
-        run: |
-          ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << EOF
-            # Habilita 'exit on error'
-            set -e
+  env:
+    VM_USER: gcpuser
+    VM_IP: ${{ secrets.VM_IP }}
+    SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+    ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
+    IMAGE_TAG: ${{ env.IMAGE_TAG }}
+    REGISTRY: ${{ env.REGISTRY }}
+    IMAGE_NAME: ${{ env.IMAGE_NAME }}
+    
+  run: |
+    ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << 'ENDSSH'
+      set -e
+      echo "Activating service account for Docker pull..."
+      
+      # Recibir la clave codificada desde la variable de entorno
+      echo "${ENCODED_SA_KEY}" | base64 -d > /tmp/key.json
+      
+      # Activar la cuenta de servicio
+      gcloud auth activate-service-account "${SA_EMAIL}" --key-file=/tmp/key.json
+      
+      # Configurar Docker 
+      gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
 
-            echo "Activating service account for Docker pull..."
-            
-            # Decodificar el secreto de forma segura
-            
-            # 🚩 CORRECCIÓN CRÍTICA: Usar printf y escapar variables para evitar newline/espacios
-            # La variable ENCODED_SA_KEY debe expandirse antes de que SSH envíe el comando, 
-            # y debe ser escrita con printf para evitar añadir un \n al final.
-            printf '%s' '${ENCODED_SA_KEY}' > /tmp/key_base64.txt
-            
-            # 2. Decodifica el archivo de clave JSON real (multilínea)
-            base64 -d /tmp/key_base64.txt > /tmp/key.json
-            
-            # 3. Activa la cuenta de servicio usando la clave decodificada
-            gcloud auth activate-service-account ${SA_EMAIL} --key-file=/tmp/key.json
-            
-            # 4. Configura Docker 
-            gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      # Limpiar archivo de clave
+      rm /tmp/key.json
+      
+      export REPO_DIR="/home/${VM_USER}/oneit-blog"
+      export REPO_URL="https://github.com/regperez/oneit-blog.git"
+      
+      if [ -d "$REPO_DIR" ]; then
+        echo "Repo exists. Pulling latest changes..."
+        cd $REPO_DIR
+        git reset --hard
+        git clean -f -d
+        git checkout main 
+        git pull origin main
+      else
+        echo "Repo not found. Cloning..."
+        git clone $REPO_URL $REPO_DIR
+        cd $REPO_DIR
+      fi
 
-            # 5. Limpia los archivos de clave por seguridad
-            rm /tmp/key_base64.txt /tmp/key.json
-            
-            # ... (Resto de la lógica sin cambios) ...
+      echo "Setting image tag to: ${IMAGE_TAG}"
+      sed -i "s|image: ${REGISTRY}/${IMAGE_NAME}:.*|image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|" docker-compose.yml
 
-            export REPO_DIR="/home/${VM_USER}/oneit-blog"
-            export REPO_URL="https://github.com/regperez/oneit-blog.git"
-            
-            # LÓGICA DE GIT CORREGIDA:
-            if [ -d "\$REPO_DIR" ]; then
-              echo "Repo exists. Pulling latest changes..."
-              cd \$REPO_DIR
-
-              # Descartar cambios locales antes de pull
-              git reset --hard
-              git clean -f -d
-              
-              git checkout main 
-              git pull origin main
-            else
-              echo "Repo not found. Cloning..."
-              git clone \$REPO_URL \$REPO_DIR
-              cd \$REPO_DIR
-            fi
-
-            # Actualiza 'docker-compose.yml' con la ETIQUETA DEL COMMIT (SHA)
-            echo "Setting image tag to: ${{ env.IMAGE_TAG }}"
-            
-            sed -i "s|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}|" docker-compose.yml
-
-            # 5. Desplegar
-            echo "Pulling latest image and restarting containers..."
-            docker compose pull
-            docker compose up -d --remove-orphans
-          EOF
-
-
+      echo "Pulling latest image and restarting containers..."
+      docker compose pull
+      docker compose up -d --remove-orphans
+    ENDSSH
