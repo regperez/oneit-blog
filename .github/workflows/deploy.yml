@@ -74,37 +74,37 @@ jobs:
           # Las variables del 'env' global del job ya están disponibles aquí
           # (PROJECT_ID, REGION, IMAGE_TAG, REGISTRY, IMAGE_NAME)
         run: |
-          # CORRECCIÓN 1: Usa '<< EOF' (sin comillas) 
-          # Esto permite que las variables de GitHub Actions (ej: ${{ env.IMAGE_TAG }}) 
-          # se expandan en el script antes de enviarlo a la VM.
           ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << EOF
             # Habilita 'exit on error'
             set -e
 
-            # CORRECCIÓN 2: Autentica la VM con Artifact Registry
-            # Esto es NECESARIO para que la VM pueda hacer 'pull' de tu imagen privada.
+            # Autentica la VM con Artifact Registry
             echo "Authenticating VM Docker to Artifact Registry..."
             gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-            export REPO_DIR="/home/${VM_USER}/oneit-blog" # ${VM_USER} se expande localmente (¡bien!)
-            export REPO_URL="https://github.com/regperez/oneit-blog.git" # Es una cadena (¡bien!)
+            export REPO_DIR="/home/${VM_USER}/oneit-blog"
+            export REPO_URL="https://github.com/regperez/oneit-blog.git"
             
-            # CORRECCIÓN: Escapa las variables ($REPO_DIR) para que se expandan en la VM
+            # LÓGICA DE GIT CORREGIDA:
             if [ -d "\$REPO_DIR" ]; then
               echo "Repo exists. Pulling latest changes..."
-              cd \$REPO_DIR # Escapado
-              git checkout main # Asegura estar en la rama correcta
+              cd \$REPO_DIR
+
+              # 🚩 CORRECCIÓN CRÍTICA: Descartar cambios locales antes de pull
+              # Esto elimina la versión anterior modificada por 'sed'
+              git reset --hard
+              git clean -f -d
+              
+              git checkout main 
               git pull origin main
             else
               echo "Repo not found. Cloning..."
-              # CORRECCIÓN: Escapa las variables ($REPO_URL, $REPO_DIR)
               git clone \$REPO_URL \$REPO_DIR
-              cd \$REPO_DIR # Escapado
+              cd \$REPO_DIR
             fi
 
-            # CORRECCIÓN 4: Actualiza 'docker-compose.yml' con la ETIQUETA DEL COMMIT (SHA)
-            # No uses 'latest', usa el SHA específico (${{ env.IMAGE_TAG }})
-            # para un despliegue confiable y predecible.
+            # Ahora se ejecuta el sed, modificando la versión limpia del archivo.
+            # Actualiza 'docker-compose.yml' con la ETIQUETA DEL COMMIT (SHA)
             echo "Setting image tag to: ${{ env.IMAGE_TAG }}"
             
             # Esta expresión 'sed' buscará la línea que empieza con 'image: ...' 
@@ -116,5 +116,4 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
           EOF
-
 
