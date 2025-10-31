@@ -66,7 +66,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
           
-      # Codificar la clave JSON a Base64 para una transferencia segura
+      # 6.5 Codificar la clave JSON a Base64 para una transferencia segura
       - name: Encode and Clean SA Key to Base64
         id: encode_key
         run: |
@@ -100,8 +100,11 @@ jobs:
             echo "Activating service account for Docker pull..."
             
             # Decodificar el secreto de forma segura
-            # 1. Escribe la clave codificada (una sola línea) en un archivo temporal
-            echo "${ENCODED_SA_KEY}" > /tmp/key_base64.txt
+            
+            # 🚩 CORRECCIÓN CRÍTICA: Usar printf y escapar variables para evitar newline/espacios
+            # La variable ENCODED_SA_KEY debe expandirse antes de que SSH envíe el comando, 
+            # y debe ser escrita con printf para evitar añadir un \n al final.
+            printf '%s' '${ENCODED_SA_KEY}' > /tmp/key_base64.txt
             
             # 2. Decodifica el archivo de clave JSON real (multilínea)
             base64 -d /tmp/key_base64.txt > /tmp/key.json
@@ -147,4 +150,5 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
           EOF
+
 
