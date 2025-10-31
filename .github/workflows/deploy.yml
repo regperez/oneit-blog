@@ -66,18 +66,16 @@ jobs:
           echo "ENCODED_KEY=${ENCODED_KEY}" >> $GITHUB_ENV
 
       - name: Deploy to GCP VM
-        env:
-          VM_USER: gcpuser
-          VM_IP: ${{ secrets.VM_IP }}
-          SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
-          ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
-          REGISTRY: ${{ env.REGISTRY }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          REGION: ${{ env.REGION }}
-          
         run: |
-          ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP bash << 'ENDSSH'
+          ssh -i ~/.ssh/id_rsa gcpuser@${{ secrets.VM_IP }} \
+            "ENCODED_SA_KEY='${{ env.ENCODED_KEY }}' \
+             SA_EMAIL='${{ secrets.GCP_SA_EMAIL }}' \
+             IMAGE_TAG='${{ env.IMAGE_TAG }}' \
+             REGISTRY='${{ env.REGISTRY }}' \
+             IMAGE_NAME='${{ env.IMAGE_NAME }}' \
+             REGION='${{ env.REGION }}' \
+             VM_USER='gcpuser' \
+             bash -s" << 'ENDSSH'
             set -e
             echo "Activating service account for Docker pull..."
             
