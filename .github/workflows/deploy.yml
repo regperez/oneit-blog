@@ -86,20 +86,20 @@ jobs:
             echo "Authenticating VM Docker to Artifact Registry..."
             gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-            # CORRECCIÓN 3: Lógica de Git mejorada
-            # Clona el repo si no existe, o hace 'pull' si ya existe.
-            export REPO_DIR="/home/${VM_USER}/oneit-blog"
-            export REPO_URL="https://github.com/regperez/oneit-blog.git"
+            export REPO_DIR="/home/${VM_USER}/oneit-blog" # ${VM_USER} se expande localmente (¡bien!)
+            export REPO_URL="https://github.com/regperez/oneit-blog.git" # Es una cadena (¡bien!)
             
-            if [ -d "$REPO_DIR" ]; then
+            # CORRECCIÓN: Escapa las variables ($REPO_DIR) para que se expandan en la VM
+            if [ -d "\$REPO_DIR" ]; then
               echo "Repo exists. Pulling latest changes..."
-              cd $REPO_DIR
+              cd \$REPO_DIR # Escapado
               git checkout main # Asegura estar en la rama correcta
               git pull origin main
             else
               echo "Repo not found. Cloning..."
-              git clone $REPO_URL $REPO_DIR
-              cd $REPO_DIR
+              # CORRECCIÓN: Escapa las variables ($REPO_URL, $REPO_DIR)
+              git clone \$REPO_URL \$REPO_DIR
+              cd \$REPO_DIR # Escapado
             fi
 
             # CORRECCIÓN 4: Actualiza 'docker-compose.yml' con la ETIQUETA DEL COMMIT (SHA)
@@ -116,4 +116,5 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
           EOF
+
 
