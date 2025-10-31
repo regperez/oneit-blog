@@ -65,17 +65,22 @@ jobs:
           echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+          
+      # Codificar la clave JSON a Base64 para una transferencia segura
+      - name: Encode SA Key to Base64
+        id: encode_key
+        run: echo "ENCODED_KEY=$(echo '${{ secrets.GCP_SA_KEY_JSON }}' | base64 -w 0)" >> $GITHUB_ENV
+        # La variable ENCODED_KEY estará disponible para el siguiente paso
 
       # 7️⃣ Desplegar en la VM
       - name: Deploy to GCP VM
         env:
           VM_USER: gcpuser
           VM_IP: ${{ secrets.VM_IP }}
-          # Nuevas variables para la autenticación remota:
           SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
-          SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }} # << DEBES CREAR ESTE SECRETO
+          # Usamos la clave codificada que acabamos de crear:
+          ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
           
-          # Variables de imagen
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
           REGISTRY: ${{ env.REGISTRY }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
@@ -85,22 +90,25 @@ jobs:
             # Habilita 'exit on error'
             set -e
 
-            # 🚩 CORRECCIÓN CRÍTICA 1: AUTENTICACIÓN DE GCLOUD PARA PULL
             echo "Activating service account for Docker pull..."
             
-            # 1. Crea temporalmente el archivo de clave JSON en la VM
-            echo "${SA_KEY_JSON}" > /tmp/key.json
+            # 🚩 CORRECCIÓN CRÍTICA 1: Decodificar el secreto de forma segura
+            # 1. Escribe la clave codificada (una sola línea) en un archivo temporal
+            echo "${ENCODED_SA_KEY}" > /tmp/key_base64.txt
             
-            # 2. Activa la cuenta de servicio usando la clave
+            # 2. Decodifica el archivo de clave JSON real (multilínea)
+            base64 -d /tmp/key_base64.txt > /tmp/key.json
+            
+            # 3. Activa la cuenta de servicio usando la clave decodificada
             gcloud auth activate-service-account ${SA_EMAIL} --key-file=/tmp/key.json
             
-            # 3. Configura Docker (ahora tiene una cuenta activa para usar)
+            # 4. Configura Docker 
             gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-            # 4. Limpia el archivo de clave por seguridad
-            rm /tmp/key.json
-
-            # ... (Lógica de Git sin cambios) ...
+            # 5. Limpia los archivos de clave por seguridad
+            rm /tmp/key_base64.txt /tmp/key.json
+            
+            # ... (Resto de la lógica sin cambios) ...
 
             export REPO_DIR="/home/${VM_USER}/oneit-blog"
             export REPO_URL="https://github.com/regperez/oneit-blog.git"
@@ -129,7 +137,6 @@ jobs:
 
             # 5. Desplegar
             echo "Pulling latest image and restarting containers..."
-            # Ahora Docker Compose debería tener las credenciales correctas
             docker compose pull
             docker compose up -d --remove-orphans
           EOF
