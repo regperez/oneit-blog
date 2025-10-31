@@ -20,23 +20,19 @@ jobs:
       REGION: us-east1
       REPO_NAME: blog-repo
       IMAGE_NAME: flask-blog
-      # Esta es la etiqueta de imagen correcta (el SHA del commit)
-      IMAGE_TAG: ${{ github.sha }} 
+      IMAGE_TAG: ${{ github.sha }}
       REGISTRY: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo
 
     steps:
-      # 1️⃣ Checkout del código fuente
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Autenticación con GCP vía OIDC
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SA_EMAIL }}
 
-      # 3️⃣ Configurar gcloud y Docker (para el RUNNER)
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -46,87 +42,70 @@ jobs:
       - name: Configure Docker to use Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      # 4️⃣ Construir imagen Docker
       - name: Build Docker image
         run: |
           docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
           docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-      # 5️⃣ Subir imagen a Artifact Registry
       - name: Push Docker image
         run: |
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-      # 6️⃣ Preparar conexión SSH a la VM
       - name: Add SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
-          
-      # 6.5 Codificar la clave JSON a Base64 para una transferencia segura
-      - name: Encode and Clean SA Key to Base64
-        id: encode_key
+
+      - name: Encode SA Key to Base64
         run: |
-          # CORRECCIÓN: Limpia el secreto de saltos de línea ('\n') y retornos de carro ('\r')
           CLEAN_JSON=$(echo '${{ secrets.GCP_SA_KEY_JSON }}' | tr -d '\n\r')
-          
-          # Codifica el JSON limpio en una sola línea.
           ENCODED_KEY=$(echo "${CLEAN_JSON}" | base64 -w 0)
-          
-          # Exporta la variable para el paso SSH
           echo "ENCODED_KEY=${ENCODED_KEY}" >> $GITHUB_ENV
 
-      # 7️⃣ Desplegar en la VM
       - name: Deploy to GCP VM
-  env:
-    VM_USER: gcpuser
-    VM_IP: ${{ secrets.VM_IP }}
-    SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
-    ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
-    IMAGE_TAG: ${{ env.IMAGE_TAG }}
-    REGISTRY: ${{ env.REGISTRY }}
-    IMAGE_NAME: ${{ env.IMAGE_NAME }}
-    
-  run: |
-    ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP << 'ENDSSH'
-      set -e
-      echo "Activating service account for Docker pull..."
-      
-      # Recibir la clave codificada desde la variable de entorno
-      echo "${ENCODED_SA_KEY}" | base64 -d > /tmp/key.json
-      
-      # Activar la cuenta de servicio
-      gcloud auth activate-service-account "${SA_EMAIL}" --key-file=/tmp/key.json
-      
-      # Configurar Docker 
-      gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
+        env:
+          VM_USER: gcpuser
+          VM_IP: ${{ secrets.VM_IP }}
+          SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+          ENCODED_SA_KEY: ${{ env.ENCODED_KEY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REGION: ${{ env.REGION }}
+          
+        run: |
+          ssh -i ~/.ssh/id_rsa $VM_USER@$VM_IP bash << 'ENDSSH'
+            set -e
+            echo "Activating service account for Docker pull..."
+            
+            echo "$ENCODED_SA_KEY" | base64 -d > /tmp/key.json
+            gcloud auth activate-service-account "$SA_EMAIL" --key-file=/tmp/key.json
+            gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+            rm /tmp/key.json
+            
+            export REPO_DIR="/home/$VM_USER/oneit-blog"
+            export REPO_URL="https://github.com/regperez/oneit-blog.git"
+            
+            if [ -d "$REPO_DIR" ]; then
+              echo "Repo exists. Pulling latest changes..."
+              cd $REPO_DIR
+              git reset --hard
+              git clean -f -d
+              git checkout main 
+              git pull origin main
+            else
+              echo "Repo not found. Cloning..."
+              git clone $REPO_URL $REPO_DIR
+              cd $REPO_DIR
+            fi
 
-      # Limpiar archivo de clave
-      rm /tmp/key.json
-      
-      export REPO_DIR="/home/${VM_USER}/oneit-blog"
-      export REPO_URL="https://github.com/regperez/oneit-blog.git"
-      
-      if [ -d "$REPO_DIR" ]; then
-        echo "Repo exists. Pulling latest changes..."
-        cd $REPO_DIR
-        git reset --hard
-        git clean -f -d
-        git checkout main 
-        git pull origin main
-      else
-        echo "Repo not found. Cloning..."
-        git clone $REPO_URL $REPO_DIR
-        cd $REPO_DIR
-      fi
+            echo "Setting image tag to: $IMAGE_TAG"
+            sed -i "s|image: $REGISTRY/$IMAGE_NAME:.*|image: $REGISTRY/$IMAGE_NAME:$IMAGE_TAG|" docker-compose.yml
 
-      echo "Setting image tag to: ${IMAGE_TAG}"
-      sed -i "s|image: ${REGISTRY}/${IMAGE_NAME}:.*|image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|" docker-compose.yml
-
-      echo "Pulling latest image and restarting containers..."
-      docker compose pull
-      docker compose up -d --remove-orphans
-    ENDSSH
+            echo "Pulling latest image and restarting containers..."
+            docker compose pull
+            docker compose up -d --remove-orphans
+          ENDSSH
