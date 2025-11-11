@@ -108,6 +108,19 @@ jobs:
               ${DOCKER_CMD} compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
             fi
 
+            # Force-kill any process using port 80 (aggressive cleanup)
+            echo "Force-freeing port 80..."
+            if command -v sudo >/dev/null 2>&1; then
+              sudo lsof -ti:80 2>/dev/null | xargs -r sudo kill -9 2>/dev/null || true
+              # or try fuser
+              sudo fuser -k 80/tcp 2>/dev/null || true
+            else
+              fuser -k 80/tcp 2>/dev/null || lsof -ti:80 | xargs -r kill -9 2>/dev/null || true
+            fi
+
+            # Give the OS a moment to release the port
+            sleep 2
+
             echo "Starting containers with docker compose..."
             # Try modern `docker compose` first then fall back to legacy `docker-compose`
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
