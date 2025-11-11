@@ -102,6 +102,12 @@ jobs:
             # We change the first 'image:' occurrence to point to our loaded image name:tag
             sed -i '0,/image:/s|image:.*|image: '"${IMAGE_NAME}:${IMAGE_TAG}"'|' docker-compose.yml || true
 
+            # Stop and remove old containers to avoid port conflicts
+            echo "Stopping and removing old containers..."
+            if ${DOCKER_CMD} compose -f docker-compose.yml ps >/dev/null 2>&1; then
+              ${DOCKER_CMD} compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
+            fi
+
             echo "Starting containers with docker compose..."
             # Try modern `docker compose` first then fall back to legacy `docker-compose`
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
