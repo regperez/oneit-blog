@@ -121,6 +121,11 @@ jobs:
             # Give the OS a moment to release the port
             sleep 2
 
+            # Force-remove leftover containers by name (avoid name conflicts)
+            echo "Removing leftover containers by name (if any)..."
+            # Try with DOCKER_CMD (may include sudo)
+            ${DOCKER_CMD} rm -f blog_db flask_blog 2>/dev/null || true
+
             echo "Starting containers with docker compose..."
             # Try modern `docker compose` first then fall back to legacy `docker-compose`
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
