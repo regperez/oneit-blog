@@ -69,7 +69,9 @@ jobs:
 
       - name: Deploy to GCP VM
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY_JSON }}
+          # Support either secret name: prefer GCP_SA_KEY_JSON, fallback to GCP_SA_KEY
+          SECRETS_GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
+          SECRETS_GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
           VM_IP_ADDR: ${{ secrets.VM_IP }}
         run: |
@@ -180,6 +182,18 @@ jobs:
 
           chmod +x /tmp/deploy-script.sh
 
+          # Choose which secret variable to use (support multiple secret names)
+          if [ -n "${SECRETS_GCP_SA_KEY_JSON}" ]; then
+            GCP_SA_KEY="${SECRETS_GCP_SA_KEY_JSON}"
+            echo "Using secret: GCP_SA_KEY_JSON"
+          elif [ -n "${SECRETS_GCP_SA_KEY}" ]; then
+            GCP_SA_KEY="${SECRETS_GCP_SA_KEY}"
+            echo "Using secret: GCP_SA_KEY"
+          else
+            echo "ERROR: No service account secret found. Set either GCP_SA_KEY_JSON or GCP_SA_KEY in repository secrets." >&2
+            exit 1
+          fi
+
           # Prepare encoded key on the runner (single-line Base64)
           # Accept either raw JSON (then encode) or an existing Base64 string (normalize).
           set -o pipefail
@@ -197,8 +211,20 @@ jobs:
             fi
           fi
 
-          # Transfer the Base64-encoded key to the remote host as a file to avoid argument quoting issues
-          printf '%s' "$ENCODED_KEY" | ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" 'cat > /tmp/encoded_key.b64 && chmod 600 /tmp/encoded_key.b64'
+            # DEBUG: check that ENCODED_KEY is non-empty and report length + sha256 (doesn't reveal original secret)
+            if [ -z "${ENCODED_KEY}" ]; then
+              echo "ERROR: ENCODED_KEY is empty on the runner. This usually means the secret GCP_SA_KEY_JSON is missing or empty in repository settings." >&2
+              echo "Please confirm the secret 'GCP_SA_KEY_JSON' exists and contains the service account JSON (or valid base64)." >&2
+              exit 1
+            else
+              LEN=$(printf '%s' "${ENCODED_KEY}" | wc -c)
+              HASH=$(printf '%s' "${ENCODED_KEY}" | sha256sum | awk '{print $1}')
+              echo "ENCODED_KEY length: ${LEN} bytes"
+              echo "ENCODED_KEY sha256: ${HASH}"
+            fi
+
+            # Transfer the Base64-encoded key to the remote host as a file to avoid argument quoting issues
+            printf '%s' "$ENCODED_KEY" | ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" 'cat > /tmp/encoded_key.b64 && chmod 600 /tmp/encoded_key.b64'
 
           # Execute the deployment script on the remote host; pass only small, safe arguments
           ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" "bash -s" < /tmp/deploy-script.sh -- "${GCP_SA_EMAIL}" "${{ env.IMAGE_TAG }}" "${{ env.REGISTRY }}" "${{ env.IMAGE_NAME }}" "${{ env.REGION }}"
