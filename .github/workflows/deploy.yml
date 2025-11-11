@@ -92,7 +92,60 @@ jobs:
           fi
 
           # Decode the key and activate the service account
-          cat "$ENCODED_KEY_FILE" | base64 -d > /tmp/key.json
+          # Better diagnostics: capture base64 stderr and validate decoded JSON before using it.
+          if ! base64 -d < "$ENCODED_KEY_FILE" > /tmp/key.json 2>/tmp/base64.err; then
+            echo "ERROR: base64 decoding failed on remote host" >&2
+            echo "--- base64 stderr (first 200 chars) ---" >&2
+            head -c 200 /tmp/base64.err 2>/dev/null | sed -n '1,20p' >&2 || true
+            echo "--- /tmp/encoded_key.b64 info ---" >&2
+            ls -l "$ENCODED_KEY_FILE" /tmp/base64.err 2>/dev/null || true
+            exit 1
+          fi
+
+          if [ ! -s /tmp/key.json ]; then
+            echo "ERROR: Decoded key file /tmp/key.json is empty" >&2
+            ls -l /tmp/key.json "$ENCODED_KEY_FILE" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Try to ensure jq is available on the remote host for robust JSON validation.
+          # If sudo is available, attempt to install jq via apt-get. If not, we'll fallback later.
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "jq not found on remote host. Attempting to install jq via sudo apt-get..."
+            if command -v sudo >/dev/null 2>&1; then
+              if sudo apt-get update && sudo apt-get install -y jq; then
+                echo "jq installed successfully on remote host"
+              else
+                echo "Warning: failed to install jq via sudo on remote host; will fallback to python3 or size checks" >&2
+              fi
+            else
+              echo "Warning: sudo not available on remote host; cannot install jq. Will fallback to python3 or size checks" >&2
+            fi
+          fi
+
+          # Validate the decoded JSON before passing to gcloud (try jq, fallback to python3)
+          if command -v jq >/dev/null 2>&1; then
+            if ! jq . /tmp/key.json >/dev/null 2>&1; then
+              echo "ERROR: Decoded key is not valid JSON (jq validation failed)" >&2
+              echo "--- head of decoded key (first 256 bytes) ---" >&2
+              head -c 256 /tmp/key.json | sed -n '1,20p' >&2 || true
+              exit 1
+            fi
+          elif command -v python3 >/dev/null 2>&1; then
+            if ! python3 -m json.tool /tmp/key.json >/dev/null 2>&1; then
+              echo "ERROR: Decoded key is not valid JSON (python validation failed)" >&2
+              echo "--- head of decoded key (first 256 bytes) ---" >&2
+              head -c 256 /tmp/key.json | sed -n '1,20p' >&2 || true
+              exit 1
+            fi
+          else
+            echo "WARNING: neither jq nor python3 available on remote host; skipping JSON validation. Checking file size..." >&2
+            if [ ! -s /tmp/key.json ]; then
+              echo "ERROR: Decoded key file is empty" >&2
+              exit 1
+            fi
+          fi
+
           gcloud auth activate-service-account "$SA_EMAIL" --key-file=/tmp/key.json
           gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
