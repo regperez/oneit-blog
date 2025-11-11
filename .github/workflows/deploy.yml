@@ -69,9 +69,10 @@ jobs:
 
       - name: Deploy to GCP VM
         env:
-          # Support either secret name: prefer GCP_SA_KEY_JSON, fallback to GCP_SA_KEY
+          # Support multiple secret names: prefer GCP_SA_KEY_JSON, then GCP_SA_KEY, then GCP_SA
           SECRETS_GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
           SECRETS_GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          SECRETS_GCP_SA: ${{ secrets.GCP_SA }}
           GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
           VM_IP_ADDR: ${{ secrets.VM_IP }}
         run: |
@@ -189,8 +190,11 @@ jobs:
           elif [ -n "${SECRETS_GCP_SA_KEY}" ]; then
             GCP_SA_KEY="${SECRETS_GCP_SA_KEY}"
             echo "Using secret: GCP_SA_KEY"
+          elif [ -n "${SECRETS_GCP_SA}" ]; then
+            GCP_SA_KEY="${SECRETS_GCP_SA}"
+            echo "Using secret: GCP_SA"
           else
-            echo "ERROR: No service account secret found. Set either GCP_SA_KEY_JSON or GCP_SA_KEY in repository secrets." >&2
+            echo "ERROR: No service account secret found. Set one of: GCP_SA_KEY_JSON, GCP_SA_KEY or GCP_SA in repository secrets." >&2
             exit 1
           fi
 
