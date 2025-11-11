@@ -59,51 +59,74 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
 
-      - name: Encode SA Key to Base64
-        run: |
-          CLEAN_JSON=$(echo '${{ secrets.GCP_SA_KEY_JSON }}' | tr -d '\n\r')
-          ENCODED_KEY=$(echo "${CLEAN_JSON}" | base64 -w 0)
-          echo "ENCODED_KEY=${ENCODED_KEY}" >> $GITHUB_ENV
-
       - name: Deploy to GCP VM
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY_JSON }}
+          GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+          VM_IP_ADDR: ${{ secrets.VM_IP }}
         run: |
-          ssh -i ~/.ssh/id_rsa gcpuser@${{ secrets.VM_IP }} \
-            "ENCODED_SA_KEY='${{ env.ENCODED_KEY }}' \
-             SA_EMAIL='${{ secrets.GCP_SA_EMAIL }}' \
-             IMAGE_TAG='${{ env.IMAGE_TAG }}' \
-             REGISTRY='${{ env.REGISTRY }}' \
-             IMAGE_NAME='${{ env.IMAGE_NAME }}' \
-             REGION='${{ env.REGION }}' \
-             VM_USER='gcpuser' \
-             bash -s" << 'ENDSSH'
-            set -e
-            echo "Activating service account for Docker pull..."
-            
-            echo "$ENCODED_SA_KEY" | base64 -d > /tmp/key.json
-            gcloud auth activate-service-account "$SA_EMAIL" --key-file=/tmp/key.json
-            gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
-            rm /tmp/key.json
-            
-            export REPO_DIR="/home/$VM_USER/oneit-blog"
-            export REPO_URL="https://github.com/regperez/oneit-blog.git"
-            
-            if [ -d "$REPO_DIR" ]; then
-              echo "Repo exists. Pulling latest changes..."
-              cd $REPO_DIR
-              git reset --hard
-              git clean -f -d
-              git checkout main 
-              git pull origin main
-            else
-              echo "Repo not found. Cloning..."
-              git clone $REPO_URL $REPO_DIR
-              cd $REPO_DIR
-            fi
+          cat > /tmp/deploy-script.sh << 'DEPLOY_SCRIPT'
+          #!/bin/bash
+          set -e
+          
+          # Receive variables from arguments (safely passed)
+          ENCODED_SA_KEY="$1"
+          SA_EMAIL="$2"
+          IMAGE_TAG="$3"
+          REGISTRY="$4"
+          IMAGE_NAME="$5"
+          REGION="$6"
+          
+          echo "Activating service account for Docker pull..."
+          
+          # Decode and use the service account key
+          echo "$ENCODED_SA_KEY" | base64 -d > /tmp/key.json
+          gcloud auth activate-service-account "$SA_EMAIL" --key-file=/tmp/key.json
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+          
+          # Securely remove the key file
+          shred -vfz -n 3 /tmp/key.json 2>/dev/null || rm -f /tmp/key.json
+          
+          export REPO_DIR="/home/gcpuser/oneit-blog"
+          export REPO_URL="https://github.com/regperez/oneit-blog.git"
+          
+          if [ -d "$REPO_DIR" ]; then
+            echo "Repo exists. Pulling latest changes..."
+            cd $REPO_DIR
+            git reset --hard
+            git clean -f -d
+            git checkout main 
+            git pull origin main
+          else
+            echo "Repo not found. Cloning..."
+            git clone $REPO_URL $REPO_DIR
+            cd $REPO_DIR
+          fi
 
-            echo "Setting image tag to: $IMAGE_TAG"
-            sed -i "s|image: $REGISTRY/$IMAGE_NAME:.*|image: $REGISTRY/$IMAGE_NAME:$IMAGE_TAG|" docker-compose.yml
+          echo "Setting image tag to: ${IMAGE_TAG}"
+          sed -i "s|image: ${REGISTRY}/${IMAGE_NAME}:.*|image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|" docker-compose.yml
 
-            echo "Pulling latest image and restarting containers..."
-            docker compose pull
-            docker compose up -d --remove-orphans
-          ENDSSH
+          echo "Pulling latest image and restarting containers..."
+          docker compose pull
+          docker compose up -d --remove-orphans
+          
+          echo "Deployment completed successfully!"
+          DEPLOY_SCRIPT
+          
+          chmod +x /tmp/deploy-script.sh
+          
+          # Encode the service account key to Base64
+          ENCODED_KEY=$(echo "${GCP_SA_KEY}" | tr -d '\n\r' | base64 -w 0)
+          
+          # Execute the script on the remote VM, passing secrets as arguments (safer than environment variables)
+          ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" \
+            "bash -s" < /tmp/deploy-script.sh -- \
+            "${ENCODED_KEY}" \
+            "${GCP_SA_EMAIL}" \
+            "${{ env.IMAGE_TAG }}" \
+            "${{ env.REGISTRY }}" \
+            "${{ env.IMAGE_NAME }}" \
+            "${{ env.REGION }}"
+          
+          # Clean up local script
+          shred -vfz -n 3 /tmp/deploy-script.sh 2>/dev/null || rm -f /tmp/deploy-script.sh
