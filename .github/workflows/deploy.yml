@@ -59,43 +59,55 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
 
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y jq
+          else
+            echo "jq already installed"
+          fi
+
       - name: Deploy to GCP VM
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY_JSON }}
           GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
           VM_IP_ADDR: ${{ secrets.VM_IP }}
         run: |
+          # Create the deployment script that will run on the remote host.
+          # The script will read the Base64-encoded SA key from /tmp/encoded_key.b64.
           cat > /tmp/deploy-script.sh << 'DEPLOY_SCRIPT'
           #!/bin/bash
           set -e
-          
-          # Receive variables from arguments (safely passed)
-          ENCODED_SA_KEY="$1"
-          SA_EMAIL="$2"
-          IMAGE_TAG="$3"
-          REGISTRY="$4"
-          IMAGE_NAME="$5"
-          REGION="$6"
-          
-          echo "Activating service account for Docker pull..."
-          
-          # Decode and use the service account key
-          echo "$ENCODED_SA_KEY" | base64 -d > /tmp/key.json
+
+          ENCODED_KEY_FILE="/tmp/encoded_key.b64"
+          SA_EMAIL="$1"
+          IMAGE_TAG="$2"
+          REGISTRY="$3"
+          IMAGE_NAME="$4"
+          REGION="$5"
+
+          if [ ! -f "$ENCODED_KEY_FILE" ]; then
+            echo "Encoded key file $ENCODED_KEY_FILE not found" >&2
+            exit 1
+          fi
+
+          # Decode the key and activate the service account
+          cat "$ENCODED_KEY_FILE" | base64 -d > /tmp/key.json
           gcloud auth activate-service-account "$SA_EMAIL" --key-file=/tmp/key.json
           gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
-          
+
           # Securely remove the key file
           shred -vfz -n 3 /tmp/key.json 2>/dev/null || rm -f /tmp/key.json
-          
+
           export REPO_DIR="/home/gcpuser/oneit-blog"
           export REPO_URL="https://github.com/regperez/oneit-blog.git"
-          
+
           if [ -d "$REPO_DIR" ]; then
             echo "Repo exists. Pulling latest changes..."
             cd $REPO_DIR
             git reset --hard
             git clean -f -d
-            git checkout main 
+            git checkout main
             git pull origin main
           else
             echo "Repo not found. Cloning..."
@@ -109,24 +121,34 @@ jobs:
           echo "Pulling latest image and restarting containers..."
           docker compose pull
           docker compose up -d --remove-orphans
-          
+
           echo "Deployment completed successfully!"
           DEPLOY_SCRIPT
-          
+
           chmod +x /tmp/deploy-script.sh
-          
-          # Encode the service account key to Base64
-          ENCODED_KEY=$(echo "${GCP_SA_KEY}" | tr -d '\n\r' | base64 -w 0)
-          
-          # Execute the script on the remote VM, passing secrets as arguments (safer than environment variables)
-          ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" \
-            "bash -s" < /tmp/deploy-script.sh -- \
-            "${ENCODED_KEY}" \
-            "${GCP_SA_EMAIL}" \
-            "${{ env.IMAGE_TAG }}" \
-            "${{ env.REGISTRY }}" \
-            "${{ env.IMAGE_NAME }}" \
-            "${{ env.REGION }}"
-          
-          # Clean up local script
+
+          # Prepare encoded key on the runner (single-line Base64)
+          # Accept either raw JSON (then encode) or an existing Base64 string (normalize).
+          set -o pipefail
+          if printf '%s' "${GCP_SA_KEY}" | jq . >/dev/null 2>&1; then
+            echo "Detected raw JSON service account key — encoding to Base64"
+            ENCODED_KEY=$(printf '%s' "${GCP_SA_KEY}" | tr -d '\n\r' | base64 -w 0)
+          else
+            echo "Input not valid JSON — treating secret as Base64 or single-line token"
+            # Normalize to single line by removing newlines and carriage returns
+            ENCODED_KEY=$(printf '%s' "${GCP_SA_KEY}" | tr -d '\n\r')
+            # Validate that decoding yields JSON (best-effort). If validation fails, exit with helpful message.
+            if ! printf '%s' "${ENCODED_KEY}" | base64 -d 2>/dev/null | jq . >/dev/null 2>&1; then
+              echo "ERROR: Provided GCP_SA_KEY is not valid JSON nor a valid base64-encoded JSON service account key" >&2
+              exit 1
+            fi
+          fi
+
+          # Transfer the Base64-encoded key to the remote host as a file to avoid argument quoting issues
+          printf '%s' "$ENCODED_KEY" | ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" 'cat > /tmp/encoded_key.b64 && chmod 600 /tmp/encoded_key.b64'
+
+          # Execute the deployment script on the remote host; pass only small, safe arguments
+          ssh -i ~/.ssh/id_rsa gcpuser@"${VM_IP_ADDR}" "bash -s" < /tmp/deploy-script.sh -- "${GCP_SA_EMAIL}" "${{ env.IMAGE_TAG }}" "${{ env.REGISTRY }}" "${{ env.IMAGE_NAME }}" "${{ env.REGION }}"
+
+          # Remove the local temporary script
           shred -vfz -n 3 /tmp/deploy-script.sh 2>/dev/null || rm -f /tmp/deploy-script.sh
