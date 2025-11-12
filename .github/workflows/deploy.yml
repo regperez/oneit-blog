@@ -65,19 +65,17 @@ jobs:
           SSH_USER: ${{ github.event.inputs.ssh_user || 'gcpuser' }}
         run: |
           REMOTE_DIR="/tmp/deploy-${{ github.run_id }}"
-          # Generate .env with safe defaults; customize in repository secrets if needed
-          ssh -i ~/.ssh/id_rsa ${SSH_USER}@${{ secrets.VM_IP }} "bash -s" << 'REMOTE_SCRIPT'
-          REMOTE_DIR="$1"
-          cat > "${REMOTE_DIR}/.env" << 'ENVFILE'
+          # Generate .env with safe defaults on the remote VM
+          ssh -i ~/.ssh/id_rsa ${SSH_USER}@${{ secrets.VM_IP }} << EOF
+          cat > ${REMOTE_DIR}/.env << 'ENVFILE'
           POSTGRES_USER=postgres
           POSTGRES_PASSWORD=postgres_secure_password
           POSTGRES_DB=blog_db
           ENVFILE
-          chmod 600 "${REMOTE_DIR}/.env"
+          chmod 600 ${REMOTE_DIR}/.env
           echo "✓ .env file created with database configuration"
-          cat "${REMOTE_DIR}/.env" | grep -v PASSWORD  # Show config (without exposing password)
-          REMOTE_SCRIPT
-          "${REMOTE_DIR}"
+          grep -v PASSWORD ${REMOTE_DIR}/.env || true
+          EOF
 
       - name: "Remote: load image and run docker compose"
         env:
