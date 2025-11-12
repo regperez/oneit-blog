@@ -58,6 +58,26 @@ jobs:
           REMOTE_DIR="/tmp/deploy-${{ github.run_id }}"
           scp -i ~/.ssh/id_rsa image.tar.gz ${SSH_USER}@${{ secrets.VM_IP }}:${REMOTE_DIR}/
           scp -i ~/.ssh/id_rsa docker-compose.yml ${SSH_USER}@${{ secrets.VM_IP }}:${REMOTE_DIR}/ || true
+          scp -i ~/.ssh/id_rsa .env.example ${SSH_USER}@${{ secrets.VM_IP }}:${REMOTE_DIR}/.env 2>/dev/null || true
+
+      - name: Generate .env file on VM with database config
+        env:
+          SSH_USER: ${{ github.event.inputs.ssh_user || 'gcpuser' }}
+        run: |
+          REMOTE_DIR="/tmp/deploy-${{ github.run_id }}"
+          # Generate .env with safe defaults; customize in repository secrets if needed
+          ssh -i ~/.ssh/id_rsa ${SSH_USER}@${{ secrets.VM_IP }} "bash -s" << 'REMOTE_SCRIPT'
+          REMOTE_DIR="$1"
+          cat > "${REMOTE_DIR}/.env" << 'ENVFILE'
+          POSTGRES_USER=postgres
+          POSTGRES_PASSWORD=postgres_secure_password
+          POSTGRES_DB=blog_db
+          ENVFILE
+          chmod 600 "${REMOTE_DIR}/.env"
+          echo "✓ .env file created with database configuration"
+          cat "${REMOTE_DIR}/.env" | grep -v PASSWORD  # Show config (without exposing password)
+          REMOTE_SCRIPT
+          "${REMOTE_DIR}"
 
       - name: "Remote: load image and run docker compose"
         env:
@@ -139,10 +159,10 @@ jobs:
             echo "Starting containers with docker compose..."
             # Try modern `docker compose` first then fall back to legacy `docker-compose`
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
-              ${DOCKER_CMD} compose -f docker-compose.yml up -d --remove-orphans
+              ${DOCKER_CMD} compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans
             else
               if command -v docker-compose >/dev/null 2>&1; then
-                docker-compose -f docker-compose.yml up -d --remove-orphans
+                docker-compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans
               else
                 echo "ERROR: neither 'docker compose' nor 'docker-compose' available on remote host" >&2
                 exit 1
