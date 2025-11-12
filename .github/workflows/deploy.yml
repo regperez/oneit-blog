@@ -19,6 +19,7 @@ jobs:
     env:
       IMAGE_NAME: oneit-blog
       IMAGE_TAG: ${{ github.sha }}
+      REGISTRY_IMAGE: us-east1-docker.pkg.dev/blog-flask-oneit/blog-repo/flask-blog
 
     steps:
       - name: Checkout
@@ -26,7 +27,10 @@ jobs:
 
       - name: Build Docker image
         run: |
+          # Build with both local tag and registry tag for pushing later (optional)
           docker build -t "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" .
+          docker tag "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" "${{ env.REGISTRY_IMAGE }}:${{ env.IMAGE_TAG }}"
+          docker tag "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" "${{ env.REGISTRY_IMAGE }}:latest"
 
       - name: Save image and compress
         run: |
@@ -60,6 +64,7 @@ jobs:
           SSH_USER: ${{ github.event.inputs.ssh_user || 'gcpuser' }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          REGISTRY_IMAGE: ${{ env.REGISTRY_IMAGE }}
         run: |
           REMOTE_DIR="/tmp/deploy-${{ github.run_id }}"
 
@@ -71,6 +76,7 @@ jobs:
           REMOTE_DIR="$1"
           IMAGE_NAME="$2"
           IMAGE_TAG="$3"
+          REGISTRY_IMAGE="$4"
 
           cd "$REMOTE_DIR"
 
@@ -91,16 +97,22 @@ jobs:
             gunzip -c image.tar.gz > image.tar
             ${DOCKER_CMD} load -i image.tar
             rm -f image.tar image.tar.gz
+            echo "Image loaded successfully as ${IMAGE_NAME}:${IMAGE_TAG}"
           else
             echo "ERROR: image.tar.gz not found in ${REMOTE_DIR}" >&2
             exit 1
           fi
 
-          # If a docker-compose.yml exists, update the image reference to the loaded local tag (best-effort)
+          # Tag the loaded image with the registry name so docker compose can find it
+          echo "Tagging loaded image as ${REGISTRY_IMAGE}:${IMAGE_TAG}..."
+          ${DOCKER_CMD} tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_IMAGE}:${IMAGE_TAG}" || true
+          ${DOCKER_CMD} tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_IMAGE}:latest" || true
+
+          # If a docker-compose.yml exists, ensure the image reference is set correctly
           if [ -f docker-compose.yml ]; then
-            # Replace any 'image: <something>' line for the service named 'app' or first occurrence; this is intentionally conservative.
-            # We change the first 'image:' occurrence to point to our loaded image name:tag
-            sed -i '0,/image:/s|image:.*|image: '"${IMAGE_NAME}:${IMAGE_TAG}"'|' docker-compose.yml || true
+            echo "Updating docker-compose.yml to use IMAGE_TAG=${IMAGE_TAG}..."
+            # Replace the image line to use the registry image with the specific tag
+            sed -i "s|image: .*flask-blog:.*|image: ${REGISTRY_IMAGE}:${IMAGE_TAG}|g" docker-compose.yml
 
             # Stop and remove old containers to avoid port conflicts
             echo "Stopping and removing old containers..."
@@ -112,7 +124,6 @@ jobs:
             echo "Force-freeing port 80..."
             if command -v sudo >/dev/null 2>&1; then
               sudo lsof -ti:80 2>/dev/null | xargs -r sudo kill -9 2>/dev/null || true
-              # or try fuser
               sudo fuser -k 80/tcp 2>/dev/null || true
             else
               fuser -k 80/tcp 2>/dev/null || lsof -ti:80 | xargs -r kill -9 2>/dev/null || true
@@ -123,7 +134,6 @@ jobs:
 
             # Force-remove leftover containers by name (avoid name conflicts)
             echo "Removing leftover containers by name (if any)..."
-            # Try with DOCKER_CMD (may include sudo)
             ${DOCKER_CMD} rm -f blog_db flask_blog 2>/dev/null || true
 
             echo "Starting containers with docker compose..."
@@ -138,16 +148,22 @@ jobs:
                 exit 1
               fi
             fi
+
+            echo "✓ Containers started successfully"
           else
             echo "WARNING: docker-compose.yml not found; nothing to start. Image loaded as ${IMAGE_NAME}:${IMAGE_TAG}"
           fi
 
+          # Verify containers are running
+          echo ""
+          echo "=== Current running containers ==="
+          ${DOCKER_CMD} compose -f docker-compose.yml ps 2>/dev/null || ${DOCKER_CMD} ps --filter "label=com.docker.compose.project" 2>/dev/null || true
           echo "Remote deploy finished"
           EOF
 
           chmod +x /tmp/remote-deploy.sh
 
-          ssh -i ~/.ssh/id_rsa ${SSH_USER}@${{ secrets.VM_IP }} "bash -s" < /tmp/remote-deploy.sh ${REMOTE_DIR} ${IMAGE_NAME} ${IMAGE_TAG}
+          ssh -i ~/.ssh/id_rsa ${SSH_USER}@${{ secrets.VM_IP }} "bash -s" < /tmp/remote-deploy.sh ${REMOTE_DIR} ${IMAGE_NAME} ${IMAGE_TAG} ${REGISTRY_IMAGE}
 
       - name: Cleanup local artifacts
         run: |
