@@ -87,7 +87,7 @@ jobs:
           REMOTE_DIR="/tmp/deploy-${{ github.run_id }}"
 
           # Create a robust remote script that will: load image, patch compose (to use the local image tag), and run docker compose
-          cat > /tmp/remote-deploy.sh <<'EOF'
+          cat > /tmp/remote-deploy.sh <<'BASHEOF'
           #!/bin/bash
           set -euo pipefail
 
@@ -98,7 +98,6 @@ jobs:
 
           cd "$REMOTE_DIR"
 
-          # Determine docker command (try docker, fallback to sudo docker)
           DOCKER_CMD="docker"
           if ! command -v ${DOCKER_CMD} >/dev/null 2>&1; then
             if command -v sudo >/dev/null 2>&1; then
@@ -109,7 +108,6 @@ jobs:
             fi
           fi
 
-          # Decompress and load image
           if [ -f image.tar.gz ]; then
             echo "Loading image from image.tar.gz..."
             gunzip -c image.tar.gz > image.tar
@@ -121,24 +119,19 @@ jobs:
             exit 1
           fi
 
-          # Tag the loaded image with the registry name so docker compose can find it
           echo "Tagging loaded image as ${REGISTRY_IMAGE}:${IMAGE_TAG}..."
           ${DOCKER_CMD} tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_IMAGE}:${IMAGE_TAG}" || true
           ${DOCKER_CMD} tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_IMAGE}:latest" || true
 
-          # If a docker-compose.yml exists, ensure the image reference is set correctly
           if [ -f docker-compose.yml ]; then
             echo "Updating docker-compose.yml to use IMAGE_TAG=${IMAGE_TAG}..."
-            # Replace the image line to use the registry image with the specific tag
             sed -i "s|image: .*flask-blog:.*|image: ${REGISTRY_IMAGE}:${IMAGE_TAG}|g" docker-compose.yml
 
-            # Stop and remove old containers to avoid port conflicts
             echo "Stopping and removing old containers..."
             if ${DOCKER_CMD} compose -f docker-compose.yml ps >/dev/null 2>&1; then
               ${DOCKER_CMD} compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
             fi
 
-            # Force-kill any process using port 80 (aggressive cleanup)
             echo "Force-freeing port 80..."
             if command -v sudo >/dev/null 2>&1; then
               sudo lsof -ti:80 2>/dev/null | xargs -r sudo kill -9 2>/dev/null || true
@@ -146,62 +139,39 @@ jobs:
             else
               fuser -k 80/tcp 2>/dev/null || lsof -ti:80 | xargs -r kill -9 2>/dev/null || true
             fi
-
-            # Give the OS a moment to release the port
             sleep 2
-
-            # Force-remove leftover containers by name (avoid name conflicts)
-            echo "Removing leftover containers by name (if any)..."
             ${DOCKER_CMD} rm -f blog_db flask_blog 2>/dev/null || true
 
-            echo "Starting containers with docker compose..."
-            # Verify .env exists and is readable
             if [ ! -f "${REMOTE_DIR}/.env" ]; then
-              echo "WARNING: .env not found in ${REMOTE_DIR}, attempting to create with defaults..."
-              cat > "${REMOTE_DIR}/.env" << 'ENVDEFAULT'
-              POSTGRES_USER=postgres
-              POSTGRES_PASSWORD=postgres_secure_password
-              POSTGRES_DB=blog_db
-              ENVDEFAULT
+              echo "Creating .env with defaults..."
+              printf "POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres_secure_password\nPOSTGRES_DB=blog_db\n" > "${REMOTE_DIR}/.env"
               chmod 600 "${REMOTE_DIR}/.env"
             fi
 
-            # Try modern `docker compose` first then fall back to legacy `docker-compose`
+            echo "Starting containers with docker compose..."
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
-              echo "Using 'docker compose' with env file: ${REMOTE_DIR}/.env"
               ${DOCKER_CMD} compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans || true
               sleep 3
-              # Check if services started; if not, show logs
-              if ! ${DOCKER_CMD} compose -f docker-compose.yml ps | grep -q "Up"; then
-                echo "WARNING: Containers may not have started. Checking logs..."
-                ${DOCKER_CMD} compose -f docker-compose.yml logs --tail=20 || true
-              fi
+              ${DOCKER_CMD} compose -f docker-compose.yml logs --tail=20 || true
             else
               if command -v docker-compose >/dev/null 2>&1; then
-                echo "Using legacy 'docker-compose' with env file: ${REMOTE_DIR}/.env"
                 docker-compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans || true
                 sleep 3
-                if ! docker-compose -f docker-compose.yml ps | grep -q "Up"; then
-                  echo "WARNING: Containers may not have started. Checking logs..."
-                  docker-compose -f docker-compose.yml logs --tail=20 || true
-                fi
+                docker-compose -f docker-compose.yml logs --tail=20 || true
               else
-                echo "ERROR: neither 'docker compose' nor 'docker-compose' available on remote host" >&2
+                echo "ERROR: neither docker compose nor docker-compose available" >&2
                 exit 1
               fi
             fi
 
-            echo "✓ Containers started successfully"
+            echo "Container status:"
+            ${DOCKER_CMD} compose -f docker-compose.yml ps || true
           else
-            echo "WARNING: docker-compose.yml not found; nothing to start. Image loaded as ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "WARNING: docker-compose.yml not found"
           fi
 
-          # Verify containers are running
-          echo ""
-          echo "=== Current running containers ==="
-          ${DOCKER_CMD} compose -f docker-compose.yml ps 2>/dev/null || ${DOCKER_CMD} ps --filter "label=com.docker.compose.project" 2>/dev/null || true
           echo "Remote deploy finished"
-          EOF
+          BASHEOF
 
           chmod +x /tmp/remote-deploy.sh
 
