@@ -155,12 +155,36 @@ jobs:
             ${DOCKER_CMD} rm -f blog_db flask_blog 2>/dev/null || true
 
             echo "Starting containers with docker compose..."
+            # Verify .env exists and is readable
+            if [ ! -f "${REMOTE_DIR}/.env" ]; then
+              echo "WARNING: .env not found in ${REMOTE_DIR}, attempting to create with defaults..."
+              cat > "${REMOTE_DIR}/.env" << 'ENVDEFAULT'
+              POSTGRES_USER=postgres
+              POSTGRES_PASSWORD=postgres_secure_password
+              POSTGRES_DB=blog_db
+              ENVDEFAULT
+              chmod 600 "${REMOTE_DIR}/.env"
+            fi
+
             # Try modern `docker compose` first then fall back to legacy `docker-compose`
             if ${DOCKER_CMD} compose version >/dev/null 2>&1; then
-              ${DOCKER_CMD} compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans
+              echo "Using 'docker compose' with env file: ${REMOTE_DIR}/.env"
+              ${DOCKER_CMD} compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans || true
+              sleep 3
+              # Check if services started; if not, show logs
+              if ! ${DOCKER_CMD} compose -f docker-compose.yml ps | grep -q "Up"; then
+                echo "WARNING: Containers may not have started. Checking logs..."
+                ${DOCKER_CMD} compose -f docker-compose.yml logs --tail=20 || true
+              fi
             else
               if command -v docker-compose >/dev/null 2>&1; then
-                docker-compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans
+                echo "Using legacy 'docker-compose' with env file: ${REMOTE_DIR}/.env"
+                docker-compose --env-file "${REMOTE_DIR}/.env" -f docker-compose.yml up -d --remove-orphans || true
+                sleep 3
+                if ! docker-compose -f docker-compose.yml ps | grep -q "Up"; then
+                  echo "WARNING: Containers may not have started. Checking logs..."
+                  docker-compose -f docker-compose.yml logs --tail=20 || true
+                fi
               else
                 echo "ERROR: neither 'docker compose' nor 'docker-compose' available on remote host" >&2
                 exit 1
